@@ -467,6 +467,21 @@ export function resolveHostDefaultPermission(ctx: Context): TaskPermission | und
   }
 }
 
+/** Structural subset of the Host `connection` service. */
+export interface ConnectionFace {
+  requestRejection(req: import('node:http').IncomingMessage): number | undefined
+}
+
+/** Resolve the optional `connection` service from `@deepseek-ai/dsh-client-connection`. */
+export function resolveConnection(ctx: Context): ConnectionFace | undefined {
+  try {
+    const conn = (ctx as { get?: (name: string) => unknown }).get?.('connection') as ConnectionFace | undefined
+    return conn !== undefined && typeof conn.requestRejection === 'function' ? conn : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Read the optional `llm` service. The board deliberately does not inject it:
  * a deployment without a model must still mount the board, and the parse route
@@ -779,7 +794,11 @@ function applyImpl(ctx: Context, config?: Config): void {
         const handle = offGate as { dispose(): void }
         disposers.push(() => { handle.dispose() })
       }
-      const routes = makeTaskBoardRoutes(host, resolveProxyAccess(config), {
+      const connection = resolveConnection(ctx)
+      const routes = makeTaskBoardRoutes(host, {
+        ...resolveProxyAccess(config),
+        ...(connection !== undefined ? { connection } : {}),
+      }, {
         parseTask: async (request, signal) => {
           const llm = resolveLlmRuntime(ctx)
           if (llm === undefined) throw new TaskParseError('no-model', 'this deployment serves no llm service')

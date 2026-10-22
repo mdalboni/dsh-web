@@ -33,6 +33,14 @@ export interface TaskBoardRouteAccess {
    * keeps the pre-existing fence exactly as it was (issue #1906).
    */
   trustForwardedProxy?: () => boolean
+  /**
+   * Optional connection service from `@deepseek-ai/dsh-client-connection` or custom authenticator.
+   * When a request satisfies the Host's trusted-hosts and browser-auth checks, it is admitted.
+   */
+  connection?: {
+    requestRejection?(req: IncomingMessage): number | undefined
+  }
+  authenticate?: (req: IncomingMessage) => boolean
 }
 
 /**
@@ -49,6 +57,8 @@ interface ResolvedRouteAccess {
   trustedProxyHosts: ReadonlySet<string>
   proxyToken?: string
   trustForwardedProxy: () => boolean
+  connection?: { requestRejection?(req: IncomingMessage): number | undefined }
+  authenticate?: (req: IncomingMessage) => boolean
 }
 
 function parseAuthority(authority: string): { canonical: string; url: URL } | undefined {
@@ -80,10 +90,15 @@ function resolveAccess(access: TaskBoardRouteAccess): ResolvedRouteAccess {
   if (trustedProxyHosts.size > 0 && (access.proxyToken === undefined || access.proxyToken === '')) {
     throw new Error('task-board: authenticated proxy hosts require a non-empty proxy token')
   }
+  const authenticate = access.authenticate ?? (access.connection !== undefined
+    ? (req: IncomingMessage): boolean => access.connection?.requestRejection?.(req) === undefined
+    : undefined)
   return {
     trustedProxyHosts,
     trustForwardedProxy: access.trustForwardedProxy ?? ((): boolean => false),
     ...(access.proxyToken === undefined ? {} : { proxyToken: access.proxyToken }),
+    ...(access.connection === undefined ? {} : { connection: access.connection }),
+    ...(authenticate === undefined ? {} : { authenticate }),
   }
 }
 
@@ -169,6 +184,7 @@ function matchesToken(candidate: string | string[] | undefined, expected: string
  * refusing every forwarded request (issue #1906).
  */
 export function isTrustedTaskBoardRequest(req: IncomingMessage, access: ResolvedRouteAccess): boolean {
+  if (access.authenticate?.(req)) return true
   if (!browserSameOriginMarker(req)) return false
   if (isLoopbackRequest(req)) return true
   // The tunnel makes the socket and the Host describe the proxy, so the
@@ -209,7 +225,9 @@ export function makeTaskBoardRoutes(
   const resolvedAccess = resolveAccess(access)
   const guard = (req: IncomingMessage, res: ServerResponse): boolean => {
     if (isTrustedTaskBoardRequest(req, resolvedAccess)) return true
-    writeJson(res, 403, { ok: false, error: 'forbidden' }, { 'cache-control': 'no-store' })
+    const status = resolvedAccess.connection?.requestRejection?.(req) === 401 ? 401 : 403
+    const error = status === 401 ? 'unauthorized' : 'forbidden'
+    writeJson(res, status, { ok: false, error }, { 'cache-control': 'no-store' })
     return false
   }
   const state: WebRoute = {

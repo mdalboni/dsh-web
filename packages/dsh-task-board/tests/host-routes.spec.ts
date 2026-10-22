@@ -120,6 +120,52 @@ describe('task-board HTTP routes', () => {
     expect(await requestStatus(`${base}/api/task-board/state`, { cookie: 'theme=dark' })).toBe(403)
   })
 
+  it('admits requests from a reverse proxy when authenticated by connection service', async () => {
+    const service = {
+      snapshot: () => snapshot,
+      apply,
+      subscribe: () => () => undefined,
+    } as unknown as TaskBoardHostService
+    const routes = makeTaskBoardRoutes(service, {
+      connection: {
+        requestRejection: (req) => {
+          if (req.headers.host === 'dsh.example.internal' && req.headers.cookie?.includes('dsh-auth-')) {
+            return undefined
+          }
+          return 401
+        },
+      },
+    })
+    const proxyServer = createServer((req, res) => {
+      Object.defineProperty(req.socket, 'remoteAddress', { value: '10.42.1.20', configurable: true })
+      const route = routes.find(c => c.path === new URL(req.url ?? '/', 'http://local').pathname)
+      if (!route) { res.writeHead(404); res.end(); return }
+      void route.handler(req, res)
+    })
+    await new Promise<void>(resolve => { proxyServer.listen(0, '127.0.0.1', resolve) })
+    const port = (proxyServer.address() as import('node:net').AddressInfo).port
+    const url = `http://127.0.0.1:${port}/api/task-board/state`
+    try {
+      // 1. Authenticated proxy request -> 200
+      const authedStatus = await requestStatus(url, {
+        host: 'dsh.example.internal',
+        cookie: 'dsh-auth-token=valid',
+        'x-forwarded-for': '192.168.15.50',
+        'sec-fetch-site': 'same-origin',
+      })
+      expect(authedStatus).toBe(200)
+
+      // 2. Unauthenticated proxy request -> 401
+      const unauthedStatus = await requestStatus(url, {
+        host: 'dsh.example.internal',
+        'x-forwarded-for': '192.168.15.50',
+      })
+      expect(unauthedStatus).toBe(401)
+    } finally {
+      await new Promise<void>(resolve => proxyServer.close(() => resolve()))
+    }
+  })
+
   it('accepts only an allowlisted same-origin proxy Host with its server token', async () => {
     const service = {
       snapshot: () => snapshot,
