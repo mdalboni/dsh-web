@@ -53,4 +53,38 @@ describe('isSkillExplorerAllowed', () => {
       cookie: 'dsh_pair=revoked',
     }))).toBe(false)
   })
+
+  it('operator: allows a remote client when the host connection service accepts the request', () => {
+    // Given an incoming request through a reverse proxy and an accepting host connection service
+    const requestRejection = vi.fn(() => undefined)
+    const ctx = { get: (name: string) => name === 'connection' ? { requestRejection } : undefined }
+    const req = request({
+      remoteAddress: '192.168.15.24',
+      host: 'dsh.lab.dalboni.com.br',
+    })
+
+    // When checking skill-explorer route admission
+    const allowed = isSkillExplorerAllowed(ctx as never, req)
+
+    // Then the request is accepted and connection service was queried
+    expect(allowed).toBe(true)
+    expect(requestRejection).toHaveBeenCalledWith(req)
+  })
+
+  it('operator: refuses a remote client when the host connection service rejects the request', () => {
+    // Given an incoming request through a reverse proxy and a rejecting host connection service
+    const requestRejection = vi.fn(() => 403)
+    const ctx = { get: (name: string) => name === 'connection' ? { requestRejection } : undefined }
+    const req = request({
+      remoteAddress: '192.168.15.24',
+      host: 'dsh.lab.dalboni.com.br',
+    })
+
+    // When checking skill-explorer route admission
+    const allowed = isSkillExplorerAllowed(ctx as never, req)
+
+    // Then the request is rejected and connection service was queried
+    expect(allowed).toBe(false)
+    expect(requestRejection).toHaveBeenCalledWith(req)
+  })
 })
